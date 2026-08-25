@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engro Connect — NAR Telemetry Sync Hub</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="glass-bg"></div>
+  <div class="glow-mesh"></div>
+
+  <div class="portal-container">
+    <!-- Header -->
+    <header class="portal-header">
+      <div class="logo-area">
+        <div class="logo-icon">▲</div>
+        <div class="logo-text">
+          <h1>ENGRO CONNECT</h1>
+          <span>NAR Telemetry Sync Hub</span>
+        </div>
+      </div>
+      <div class="system-status">
+        <span class="status-indicator online"></span>
+        <span class="status-lbl">Telemetry Engine Active</span>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="portal-grid">
+      <!-- Left Column: Controls & Ingestion -->
+      <section class="control-panel">
+        <!-- Step 1: GitHub Settings -->
+        <div class="portal-card">
+          <div class="card-header">
+            <span class="step-badge">1</span>
+            <h2>GitHub Deployment Settings</h2>
+          </div>
+          <p class="card-desc">Configure where the parsed telemetry payload will be pushed.</p>
+          
+          <div class="form-grid">
+            <div class="input-group">
+              <label for="git-token">Personal Access Token (PAT)</label>
+              <input type="password" id="git-token" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="new-password">
+            </div>
+            
+            <div class="input-group-row">
+              <div class="input-group">
+                <label for="git-owner">Repo Owner</label>
+                <input type="text" id="git-owner" value="Techmastergojo">
+              </div>
+              <div class="input-group">
+                <label for="git-repo">Repository</label>
+                <input type="text" id="git-repo" value="Engro-Connect-Web">
+              </div>
+            </div>
+
+            <div class="input-group-row">
+              <div class="input-group">
+                <label for="git-path">File Path</label>
+                <input type="text" id="git-path" value="telemetry-data.json">
+              </div>
+              <div class="input-group">
+                <label for="git-branch">Branch</label>
+                <input type="text" id="git-branch" value="main">
+              </div>
+            </div>
+          </div>
+          <button id="save-settings-btn" class="secondary-btn">Save Configuration</button>
+        </div>
+
+        <!-- Step 2: Data Ingestion Dropzone -->
+        <div class="portal-card">
+          <div class="card-header">
+            <span class="step-badge">2</span>
+            <h2>Ingest Telemetry Sheets</h2>
+          </div>
+          <p class="card-desc">Drag and drop the CSV files exported from the cluster worksheet.</p>
+
+          <div id="drop-zone" class="drop-zone">
+            <div class="drop-icon">📁</div>
+            <p>Drag & Drop CSV files here or <span class="browse-link">browse files</span></p>
+            <input type="file" id="file-input" multiple accept=".csv" class="hidden-input">
+          </div>
+
+          <!-- File Queue List -->
+          <div class="file-queue-title">Uploaded Files:</div>
+          <div id="file-list" class="file-list">
+            <div class="empty-queue-msg">No files uploaded yet.</div>
+          </div>
+
+          <button id="parse-data-btn" class="primary-btn disabled" disabled>Process Ingested Sheets</button>
+        </div>
+      </section>
+
+      <!-- Right Column: Status & Realtime Sync -->
+      <section class="results-panel">
+        <!-- Step 3: Parsed Metrics Summary -->
+        <div class="portal-card metrics-card">
+          <div class="card-header">
+            <span class="step-badge">3</span>
+            <h2>Parsed Telemetry Summary</h2>
+          </div>
+          
+          <div class="stats-grid">
+            <div class="stat-item blue">
+              <span class="stat-lbl">DEODAR TOWERS</span>
+              <strong id="stat-sites">-</strong>
+            </div>
+            <div class="stat-item green">
+              <span class="stat-lbl">NETWORK NAR %</span>
+              <strong id="stat-nar">-</strong>
+            </div>
+            <div class="stat-item amber">
+              <span class="stat-lbl">TOTAL INCIDENTS</span>
+              <strong id="stat-incidents">-</strong>
+            </div>
+            <div class="stat-item coral">
+              <span class="stat-lbl">DOWNTIME (HRS)</span>
+              <strong id="stat-downtime">-</strong>
+            </div>
+          </div>
+
+          <div class="sync-actions-box">
+            <button id="publish-btn" class="sync-btn disabled" disabled>
+              <span class="sync-icon">🔄</span>
+              <span>Publish Telemetry to Live App</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- System Execution Log -->
+        <div class="portal-card log-card">
+          <div class="card-header">
+            <h2>System Process Log</h2>
+            <button id="clear-log-btn" class="text-btn">Clear Logs</button>
+          </div>
+          <div id="log-terminal" class="log-terminal">
+            <div class="log-line info">[System] Engro Sync Engine initialized. Ready to parse telemetry.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
