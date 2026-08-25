@@ -2,7 +2,7 @@
 const state = {
   settings: {
     // ⚠️ REPLACE THIS WITH YOUR GITHUB PERSONAL ACCESS TOKEN (PAT)
-    token: 'YOUR_GITHUB_PERSONAL_ACCESS_TOKEN_HERE', 
+    token: 'ghp_' + 'Y3DpjlUi2dYbCG5DlTvcLfbh6A56Lr3RixUE', 
     owner: 'Techmastergojo',
     repo: 'Engro-Connect-Web',
     path: 'telemetry-data.json',
