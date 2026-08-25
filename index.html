@@ -35,49 +35,10 @@
     <main class="portal-grid">
       <!-- Left Column: Controls & Ingestion -->
       <section class="control-panel">
-        <!-- Step 1: GitHub Settings -->
+        <!-- Step 1: Data Ingestion Dropzone -->
         <div class="portal-card">
           <div class="card-header">
             <span class="step-badge">1</span>
-            <h2>GitHub Deployment Settings</h2>
-          </div>
-          <p class="card-desc">Configure where the parsed telemetry payload will be pushed.</p>
-          
-          <div class="form-grid">
-            <div class="input-group">
-              <label for="git-token">Personal Access Token (PAT)</label>
-              <input type="password" id="git-token" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="new-password">
-            </div>
-            
-            <div class="input-group-row">
-              <div class="input-group">
-                <label for="git-owner">Repo Owner</label>
-                <input type="text" id="git-owner" value="Techmastergojo">
-              </div>
-              <div class="input-group">
-                <label for="git-repo">Repository</label>
-                <input type="text" id="git-repo" value="Engro-Connect-Web">
-              </div>
-            </div>
-
-            <div class="input-group-row">
-              <div class="input-group">
-                <label for="git-path">File Path</label>
-                <input type="text" id="git-path" value="telemetry-data.json">
-              </div>
-              <div class="input-group">
-                <label for="git-branch">Branch</label>
-                <input type="text" id="git-branch" value="main">
-              </div>
-            </div>
-          </div>
-          <button id="save-settings-btn" class="secondary-btn">Save Configuration</button>
-        </div>
-
-        <!-- Step 2: Data Ingestion Dropzone -->
-        <div class="portal-card">
-          <div class="card-header">
-            <span class="step-badge">2</span>
             <h2>Ingest Telemetry Sheets</h2>
           </div>
           <p class="card-desc">Drag and drop the CSV files exported from the cluster worksheet.</p>
@@ -100,10 +61,10 @@
 
       <!-- Right Column: Status & Realtime Sync -->
       <section class="results-panel">
-        <!-- Step 3: Parsed Metrics Summary -->
+        <!-- Step 2: Parsed Metrics Summary -->
         <div class="portal-card metrics-card">
           <div class="card-header">
-            <span class="step-badge">3</span>
+            <span class="step-badge">2</span>
             <h2>Parsed Telemetry Summary</h2>
           </div>
           

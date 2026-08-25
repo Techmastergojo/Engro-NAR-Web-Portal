@@ -1,7 +1,8 @@
 // State Management
 const state = {
   settings: {
-    token: '',
+    // ⚠️ REPLACE THIS WITH YOUR GITHUB PERSONAL ACCESS TOKEN (PAT)
+    token: 'YOUR_GITHUB_PERSONAL_ACCESS_TOKEN_HERE', 
     owner: 'Techmastergojo',
     repo: 'Engro-Connect-Web',
     path: 'telemetry-data.json',
@@ -425,31 +426,8 @@ async function publishToGitHub() {
 
 // UI Event Handlers
 document.addEventListener('DOMContentLoaded', () => {
-  // Load settings from localStorage
-  const savedSettings = localStorage.getItem('engro_sync_portal_settings');
-  if (savedSettings) {
-    state.settings = JSON.parse(savedSettings);
-    document.getElementById('git-owner').value = state.settings.owner || 'Techmastergojo';
-    document.getElementById('git-repo').value = state.settings.repo || 'Engro-Connect-Web';
-    document.getElementById('git-path').value = state.settings.path || 'telemetry-data.json';
-    document.getElementById('git-branch').value = state.settings.branch || 'main';
-    if (state.settings.token) {
-      document.getElementById('git-token').value = state.settings.token;
-      log('Loaded saved GitHub authentication settings from cache.');
-    }
-  }
-
-  // Save Settings
-  document.getElementById('save-settings-btn').addEventListener('click', () => {
-    state.settings.token = document.getElementById('git-token').value.trim();
-    state.settings.owner = document.getElementById('git-owner').value.trim();
-    state.settings.repo = document.getElementById('git-repo').value.trim();
-    state.settings.path = document.getElementById('git-path').value.trim();
-    state.settings.branch = document.getElementById('git-branch').value.trim();
-
-    localStorage.setItem('engro_sync_portal_settings', JSON.stringify(state.settings));
-    log('GitHub deployment settings updated and cached.', 'success');
-  });
+  // Settings load from local storage is disabled since parameters are hardcoded in source.
+  log('GitHub Sync settings successfully initialized from source.');
 
   // Dropzone drag-drop events
   const dropZone = document.getElementById('drop-zone');
