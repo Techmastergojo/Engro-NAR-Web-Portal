@@ -8,7 +8,7 @@ const state = {
     path: 'telemetry-data.json',
     branch: 'main'
   },
-  files: {}, // Maps fileName -> content
+  workbook: null,
   parsedPayload: null
 };
 
@@ -22,97 +22,61 @@ function log(msg, type = 'info') {
   terminal.scrollTop = terminal.scrollHeight;
 }
 
-// Custom CSV Parser
-function parseCSV(content) {
-  const rows = [];
-  let currentField = '';
-  let inQuotes = false;
-  let currentRow = [];
-  
-  for (let i = 0; i < content.length; i++) {
-    const char = content[i];
-    const nextChar = content[i + 1];
-    
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        currentField += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      currentRow.push(currentField.trim());
-      currentField = '';
-    } else if ((char === '\r' || char === '\n') && !inQuotes) {
-      if (char === '\r' && nextChar === '\n') {
-        i++;
-      }
-      currentRow.push(currentField.trim());
-      rows.push(currentRow);
-      currentRow = [];
-      currentField = '';
-    } else {
-      currentField += char;
-    }
+// Convert Excel Serial Date to Date String (YYYY-MM-DD)
+function excelDateToDateStr(excelDate) {
+  if (!excelDate) return '2026-08-01';
+  if (typeof excelDate === 'string') {
+    return excelDate.split(' ')[0];
   }
-  if (currentField || currentRow.length > 0) {
-    currentRow.push(currentField.trim());
-    rows.push(currentRow);
-  }
-  
-  if (rows.length === 0) return [];
-  
-  const rawHeaders = rows[0];
-  const headers = rawHeaders.map(h => h.replace(/^\ufeff/, '').trim());
-  
-  const records = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row = {};
-    headers.forEach((header, idx) => {
-      row[header] = rows[i][idx] !== undefined ? rows[i][idx] : '';
-    });
-    records.push(row);
-  }
-  return records;
+  const num = typeof excelDate === 'number' ? excelDate : parseFloat(excelDate);
+  if (isNaN(num)) return '2026-08-01';
+  const jsDate = new Date((num - 25569) * 86400 * 1000);
+  const y = jsDate.getUTCFullYear();
+  const m = String(jsDate.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(jsDate.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-function normalizeDateStr(dateStr) {
-  if (!dateStr) return '2026-08-01';
-  return dateStr.split(' ')[0];
-}
-
+// Helper to look up daily column in SheetJS rows
 function getDailyValue(row, dateStr) {
-  const key1 = `${dateStr} 00:00:00`;
-  const key2 = dateStr;
+  const dayNum = parseInt(dateStr.split('-')[2] || '1', 10);
+  const key1 = `${dayNum}-Aug`;
+  const key2 = `${dateStr} 00:00:00`;
+  const key3 = dateStr;
+  
   if (row[key1] !== undefined && row[key1] !== '') return parseFloat(row[key1]);
   if (row[key2] !== undefined && row[key2] !== '') return parseFloat(row[key2]);
+  if (row[key3] !== undefined && row[key3] !== '') return parseFloat(row[key3]);
   return undefined;
 }
 
-// Process Ingested CSV Files
+// Process Ingested Excel Workbook
 function processTelemetryData() {
   log('Starting telemetry data compilation...');
+  if (!state.workbook) {
+    log('Processing error: No workbook loaded. Drag & drop an Excel file first.', 'error');
+    return;
+  }
   
-  // Identify uploaded sheets
-  let rslRows = [];
-  let siteWiseRows = [];
-  let narDayRows = [];
-  let dateWiseRows = [];
+  const workbook = state.workbook;
 
-  Object.entries(state.files).forEach(([name, content]) => {
-    const records = parseCSV(content);
-    if (name.includes('Consolidated RSL')) rslRows = records;
-    else if (name.includes('SiteWiseDT')) siteWiseRows = records;
-    else if (name.includes('Site NAR-Day')) narDayRows = records;
-    else if (name.includes('DateWiseDT')) dateWiseRows = records;
-  });
+  const rslSheet = workbook.Sheets['Consolidated RSL Aug-26'];
+  const siteWiseSheet = workbook.Sheets['SiteWiseDT'];
+  const narDaySheet = workbook.Sheets['Site NAR-Day'];
+  const dateWiseSheet = workbook.Sheets['DateWiseDT'];
 
-  if (rslRows.length === 0 || siteWiseRows.length === 0 || narDayRows.length === 0 || dateWiseRows.length === 0) {
-    log('Processing error: Missing required files in the queue. Make sure you uploaded all 4 sheets.', 'error');
+  if (!rslSheet || !siteWiseSheet || !narDaySheet || !dateWiseSheet) {
+    log('Processing error: Missing required worksheets inside the workbook. Make sure sheets Consolidated RSL Aug-26, SiteWiseDT, Site NAR-Day, and DateWiseDT are present.', 'error');
     return;
   }
 
-  log(`Loaded ${rslRows.length} outage logs, ${siteWiseRows.length} site list, ${narDayRows.length} timeline matrix.`);
+  // Parse worksheets to JSON
+  const rslRows = XLSX.utils.sheet_to_json(rslSheet, { defval: '' });
+  const siteWiseRows = XLSX.utils.sheet_to_json(siteWiseSheet, { defval: '' });
+  const narDayRows = XLSX.utils.sheet_to_json(narDaySheet, { defval: '' });
+  const dateWiseRows = XLSX.utils.sheet_to_json(dateWiseSheet, { defval: '' });
+
+  log(`Successfully read worksheets from XLSX. Consolidated RSL rows: ${rslRows.length}, SiteWiseDT rows: ${siteWiseRows.length}, Site NAR-Day rows: ${narDayRows.length}, DateWiseDT rows: ${dateWiseRows.length}`);
 
   // 1. Identify Deodar Sites
   const deodarSiteCodes = new Set();
@@ -148,7 +112,7 @@ function processTelemetryData() {
   dateWiseRows.forEach(row => {
     const mbuVal = row['MBU'];
     if (mbuVal) {
-      const dateStr = normalizeDateStr(mbuVal);
+      const dateStr = excelDateToDateStr(mbuVal);
       dateWiseMap[dateStr] = row;
     }
   });
@@ -166,13 +130,13 @@ function processTelemetryData() {
     const siteName = rawSiteName.replace(/^[A-Z0-9]+__S_/, '').replace(/^[A-Z0-9]+_H_/, '').replace(/_/g, ' ');
     const mbu = String(row['MBU#'] || row['Region'] || 'C4-GUJ-01').trim();
     
-    // DT to Hours
+    // DT in RSL is in minutes, convert to hours
     const dtRaw = parseFloat(row['DT']) || 0;
     const dtHours = dtRaw / 60;
     
     const reason = String(row['Reasons'] || row['Reason Category'] || 'Commercial Power Grid').trim();
     const category = String(row['Reason Category'] || row['General'] || 'Grid Power').trim();
-    const dateStr = normalizeDateStr(row['Occurring']);
+    const dateStr = excelDateToDateStr(row['Occurring']);
     const vendor = String(row['Vendor'] || 'Huawei');
     const siteType = String(row['SiteType'] || 'Macro');
     const priority = String(row['Priority'] || 'General');
@@ -352,8 +316,8 @@ function processTelemetryData() {
 async function publishToGitHub() {
   const { token, owner, repo, path: filePath, branch } = state.settings;
   
-  if (!token) {
-    log('Publish failed: GitHub Access Token is not set. Save it in Step 1.', 'error');
+  if (!token || token.includes('YOUR_GITHUB')) {
+    log('Publish failed: GitHub Access Token is not set. Configure it in app.js.', 'error');
     return;
   }
 
@@ -426,7 +390,6 @@ async function publishToGitHub() {
 
 // UI Event Handlers
 document.addEventListener('DOMContentLoaded', () => {
-  // Settings load from local storage is disabled since parameters are hardcoded in source.
   log('GitHub Sync settings successfully initialized from source.');
 
   // Dropzone drag-drop events
@@ -456,59 +419,53 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function handleFiles(fileList) {
     const listContainer = document.getElementById('file-list');
-    const emptyMsg = listContainer.querySelector('.empty-queue-msg');
-    if (emptyMsg) emptyMsg.remove();
-
+    
     Array.from(fileList).forEach(file => {
-      if (!file.name.endsWith('.csv')) {
-        log(`Ignored non-CSV file: ${file.name}`, 'warn');
+      if (!file.name.endsWith('.xlsx')) {
+        log(`Ignored non-Excel workbook: ${file.name}`, 'warn');
         return;
       }
 
+      log(`Loading Excel workbook: ${file.name}...`);
       const reader = new FileReader();
       reader.onload = (e) => {
-        state.files[file.name] = e.target.result;
-        log(`Uploaded and cached file: ${file.name}`);
-        
-        // Render in queue list
-        const item = document.createElement('div');
-        item.className = 'file-item';
-        item.innerHTML = `
-          <div class="file-info">
-            <span class="file-name">${file.name}</span>
-            <span class="file-meta">${(file.size / 1024).toFixed(1)} KB</span>
-          </div>
-          <button class="remove-file-btn" data-name="${file.name}">×</button>
-        `;
-        listContainer.appendChild(item);
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          state.workbook = workbook;
+          
+          log(`Successfully loaded workbook: ${file.name}`, 'success');
+          
+          // Render in queue list
+          listContainer.innerHTML = `
+            <div class="file-item">
+              <div class="file-info">
+                <span class="file-name">${file.name}</span>
+                <span class="file-meta">${(file.size / 1024 / 1024).toFixed(2)} MB</span>
+              </div>
+              <button class="remove-file-btn" data-name="${file.name}">×</button>
+            </div>
+          `;
 
-        // Check if all files loaded to enable Processing
-        const filesCount = Object.keys(state.files).length;
-        if (filesCount >= 4) {
+          // Enable Processing button
           document.getElementById('parse-data-btn').classList.remove('disabled');
           document.getElementById('parse-data-btn').disabled = false;
+        } catch (err) {
+          log(`Error parsing workbook: ${err.message}`, 'error');
         }
       };
-      reader.readAsText(file);
+      reader.readAsArrayBuffer(file);
     });
   }
 
   // Remove File from queue
   document.getElementById('file-list').addEventListener('click', (e) => {
     if (e.target.classList.contains('remove-file-btn')) {
-      const fileName = e.target.dataset.name;
-      delete state.files[fileName];
-      e.target.parentElement.remove();
-      log(`Removed file from queue: ${fileName}`);
-      
-      const filesCount = Object.keys(state.files).length;
-      if (filesCount < 4) {
-        document.getElementById('parse-data-btn').classList.add('disabled');
-        document.getElementById('parse-data-btn').disabled = true;
-      }
-      if (filesCount === 0) {
-        document.getElementById('file-list').innerHTML = '<div class="empty-queue-msg">No files uploaded yet.</div>';
-      }
+      state.workbook = null;
+      document.getElementById('file-list').innerHTML = '<div class="empty-queue-msg">No workbook uploaded yet.</div>';
+      document.getElementById('parse-data-btn').classList.add('disabled');
+      document.getElementById('parse-data-btn').disabled = true;
+      log('Workbook removed from queue.');
     }
   });
 

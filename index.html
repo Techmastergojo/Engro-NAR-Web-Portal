@@ -10,6 +10,9 @@
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <!-- Stylesheet -->
   <link rel="stylesheet" href="style.css">
+  <!-- Scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="app.js" defer></script>
 </head>
 <body>
   <div class="glass-bg"></div>
@@ -41,21 +44,21 @@
             <span class="step-badge">1</span>
             <h2>Ingest Telemetry Sheets</h2>
           </div>
-          <p class="card-desc">Drag and drop the CSV files exported from the cluster worksheet.</p>
+          <p class="card-desc">Drag and drop the raw Excel (.xlsx) workbook containing all sheets.</p>
 
           <div id="drop-zone" class="drop-zone">
-            <div class="drop-icon">📁</div>
-            <p>Drag & Drop CSV files here or <span class="browse-link">browse files</span></p>
-            <input type="file" id="file-input" multiple accept=".csv" class="hidden-input">
+            <div class="drop-icon">📊</div>
+            <p>Drag & Drop Excel workbook (.xlsx) here or <span class="browse-link">browse files</span></p>
+            <input type="file" id="file-input" accept=".xlsx" class="hidden-input">
           </div>
 
           <!-- File Queue List -->
-          <div class="file-queue-title">Uploaded Files:</div>
+          <div class="file-queue-title">Uploaded Workbook:</div>
           <div id="file-list" class="file-list">
-            <div class="empty-queue-msg">No files uploaded yet.</div>
+            <div class="empty-queue-msg">No workbook uploaded yet.</div>
           </div>
 
-          <button id="parse-data-btn" class="primary-btn disabled" disabled>Process Ingested Sheets</button>
+          <button id="parse-data-btn" class="primary-btn disabled" disabled>Process Excel Workbook</button>
         </div>
       </section>
 
