@@ -180,7 +180,14 @@ function processTelemetryData() {
 
     if (!siteMap[siteCode]) {
       const swRow = siteWiseMap[siteCode] || {};
-      const totalNar = swRow['Total NAR'] !== undefined && swRow['Total NAR'] !== '' ? parseFloat(swRow['Total NAR']) * 100 : 99.0;
+      const ndRow = narDayMap[siteCode] || {};
+      // NAR from Site NAR-Day 'Average NAR' column (primary), fallback to SiteWiseDT 'Total NAR'
+      let totalNar = 99.0;
+      if (ndRow['Average NAR'] !== undefined && ndRow['Average NAR'] !== '' && !isNaN(ndRow['Average NAR'])) {
+        totalNar = parseFloat(ndRow['Average NAR']) * 100;
+      } else if (swRow['Total NAR'] !== undefined && swRow['Total NAR'] !== '' && !isNaN(swRow['Total NAR'])) {
+        totalNar = parseFloat(swRow['Total NAR']) * 100;
+      }
       const totalDtMin = swRow['TDT'] !== undefined && swRow['TDT'] !== '' ? parseFloat(swRow['TDT']) : 0;
       siteMap[siteCode] = {
         siteCode: siteCodeRaw, siteName, mbu, vendor, siteType, priority,
