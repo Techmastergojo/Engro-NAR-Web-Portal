@@ -60,11 +60,33 @@ function getSiteWiseDtValue(swRow, dateStr) {
 
 // Clean site name: strip site code prefix
 function cleanSiteName(rawName, siteCode) {
-  let name = rawName;
-  name = name.replace(/^[A-Z0-9]+__[A-Z]_/, '');
-  name = name.replace(/^[A-Z0-9]+_[A-Z]_/, '');
-  if (name.startsWith(siteCode)) name = name.substring(siteCode.length);
-  name = name.replace(/^[_ ]+/, '').replace(/_/g, ' ').trim();
+  let name = rawName.trim();
+  
+  // Remove site code prefix, e.g. GJR1058__
+  const codeRegex = new RegExp('^' + siteCode + '[_ ]*', 'i');
+  name = name.replace(codeRegex, '');
+  
+  // Strip common sub-prefixes like S_, H_, T_, D_ or double underscores
+  name = name.replace(/^([S|H|T|D]__?|__?)/i, '');
+
+  // Convert underscores to spaces first to avoid word boundary issues with \b
+  name = name.replace(/_/g, ' ');
+
+  // Remove parenthesized operator/generic ids, e.g. (Zong5218), (Telenor_LWR-001)
+  name = name.replace(/\((zong|telenor|ufone|cmpak|djuice)[_ ]?[a-z0-9-]+\)/ig, '');
+  name = name.replace(/\([a-z]{2,4}[_-]?\d+\)/ig, '');
+  
+  // Remove non-parenthesized operator ids, e.g. CMPak4330, Ufone1362
+  name = name.replace(/\b(zong|telenor|ufone|cmpak|djuice)[_ ]?[a-z0-9-]+\b/ig, '');
+  
+  // Match any leftover uppercase patterns of letters followed by numbers, e.g., GJ4165, MDSK4280, MDIK4147
+  name = name.replace(/\b[A-Z]{2,4}[_-]?\d+\b/g, '');
+
+  // Clean spaces and trailing separators
+  name = name.replace(/\s+/g, ' ');
+  name = name.replace(/[-\s_]+$/, '');
+  name = name.trim();
+  
   return name || siteCode;
 }
 
