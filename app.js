@@ -130,9 +130,10 @@ function processTelemetryData() {
   const narDaySheet = workbook.Sheets['Site NAR-Day'];
   const dateWiseSheet = workbook.Sheets['DateWiseDT'];
   const hist2gSheet = workbook.Sheets['2G Site Month Wise History'];
+  const cbSheet = workbook.Sheets['4G CounterBased Site Wise'];
 
-  if (!rslSheet || !siteWiseSheet || !narDaySheet || !dateWiseSheet) {
-    log('Processing error: Missing required worksheets.', 'error');
+  if (!rslSheet || !siteWiseSheet || !narDaySheet || !dateWiseSheet || !cbSheet) {
+    log('Processing error: Missing required worksheets (Consolidated RSL Aug-26, SiteWiseDT, Site NAR-Day, DateWiseDT, 4G CounterBased Site Wise).', 'error');
     return;
   }
 
@@ -141,43 +142,75 @@ function processTelemetryData() {
   const narDayRows = XLSX.utils.sheet_to_json(narDaySheet, { defval: '' });
   const dateWiseRows = XLSX.utils.sheet_to_json(dateWiseSheet, { defval: '' });
   const hist2gRows = hist2gSheet ? XLSX.utils.sheet_to_json(hist2gSheet, { defval: '' }) : [];
+  const cbRows = XLSX.utils.sheet_to_json(cbSheet, { defval: '' });
 
-  log(`Read worksheets. RSL: ${rslRows.length}, SiteWiseDT: ${siteWiseRows.length}, NARDay: ${narDayRows.length}, DateWiseDT: ${dateWiseRows.length}, 2G History: ${hist2gRows.length}`);
+  log(`Read worksheets. RSL: ${rslRows.length}, SiteWiseDT: ${siteWiseRows.length}, NARDay: ${narDayRows.length}, DateWiseDT: ${dateWiseRows.length}, 4G CounterBased: ${cbRows.length}`);
 
-  // Identify Deodar sites
+  // 1. Identify Deodar Site Codes (Union of RSL status and 4G Colocation/Host)
   const deodarSiteCodes = new Set();
   rslRows.forEach(row => {
-    if (String(row['Deodar/NonDeodar'] || '').toLowerCase().trim() === 'deodar') {
+    const val = String(row['Deodar/NonDeodar'] || '').trim().toLowerCase();
+    if (val === 'deodar' || val === 'force-majure-deodar') {
       const code = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
       if (code) deodarSiteCodes.add(code);
     }
   });
-  const deodarRslRows = rslRows.filter(row => {
-    return deodarSiteCodes.has(String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase());
-  });
-  log(`Filtered ${deodarSiteCodes.size} Deodar sites, ${deodarRslRows.length} incidents.`);
 
-  // Build lookup maps
+  cbRows.forEach(row => {
+    const omoColoc = String(row['OMO Colocation'] || '').trim().toLowerCase();
+    const omoHost = String(row['OMO host name '] || '').trim().toLowerCase();
+    const category = String(row['Category'] || '').trim().toLowerCase();
+    if (omoColoc === 'deodar' || omoHost === 'deodar' || category === 'deodar cp prime') {
+      const code = String(row['SiteCode'] || '').trim().toLowerCase();
+      if (code) deodarSiteCodes.add(code);
+    }
+  });
+
+  log(`Identified ${deodarSiteCodes.size} total Deodar sites.`);
+
+  // 2. Build date maps from parsed JSON keys
+  const ndKeys = Object.keys(narDayRows[0] || {});
+  const swKeys = Object.keys(siteWiseRows[0] || {});
+  
+  function buildHeaderDateMap(headers) {
+    const dateMap = {};
+    headers.forEach(h => {
+      if (h === undefined || h === null) return;
+      let day = null;
+      const str = String(h).trim();
+      if (!isNaN(str) && parseFloat(str) > 40000 && parseFloat(str) < 50000) {
+        const serial = parseFloat(str);
+        const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
+        day = date.getUTCDate();
+      } else {
+        const m = str.match(/^(\d+)-(Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)(-\d+)?$/i);
+        if (m) day = parseInt(m[1], 10);
+      }
+      if (day !== null && day >= 1 && day <= 31) {
+        dateMap[`2026-08-${String(day).padStart(2, '0')}`] = h;
+      }
+    });
+    return dateMap;
+  }
+
+  const ndDateMap = buildHeaderDateMap(ndKeys);
+  const swDateMap = buildHeaderDateMap(swKeys);
+
+  const activeDates = Object.keys(ndDateMap).sort();
+  const maxDate = activeDates[activeDates.length - 1] || '2026-08-31';
+  const fullDateRange = [];
+  const maxDay = parseInt(maxDate.split('-')[2], 10);
+  for (let d = 1; d <= maxDay; d++) {
+    fullDateRange.push(`2026-08-${String(d).padStart(2, '0')}`);
+  }
+
+  // 3. Build Lookup Maps
   const siteWiseMap = {};
   siteWiseRows.forEach(row => { const c = String(row['Site Code']||'').trim().toLowerCase(); if(c) siteWiseMap[c]=row; });
-  const narDayMap = {};
-  narDayRows.forEach(row => { const c = String(row['Site Code']||'').trim().toLowerCase(); if(c) narDayMap[c]=row; });
   const hist2gMap = {};
   hist2gRows.forEach(row => { const c = String(row['Site Code']||'').trim().toLowerCase(); if(c) hist2gMap[c]=row; });
   const dateWiseMap = {};
   dateWiseRows.forEach(row => { const v=row['MBU']; if(v) dateWiseMap[excelDateToDateStr(v)]=row; });
-
-  // Determine all active dates
-  const allDatesSet = new Set();
-  deodarRslRows.forEach(row => {
-    const d = excelDateToDateStr(row['Occurring']);
-    if (d.startsWith('2026-08')) allDatesSet.add(d);
-  });
-  const allDates = Array.from(allDatesSet).sort();
-  const maxDate = allDates[allDates.length - 1] || '2026-08-24';
-  const maxDay = parseInt(maxDate.split('-')[2], 10);
-  const fullDateRange = [];
-  for (let d = 1; d <= maxDay; d++) fullDateRange.push(`2026-08-${String(d).padStart(2,'0')}`);
 
   const siteMap = {};
   const reasonMap = {};
@@ -185,126 +218,170 @@ function processTelemetryData() {
   const dailyTimelineMap = {};
   const allIncidents = [];
 
-  deodarRslRows.forEach((row, i) => {
-    const siteCodeRaw = String(row['SiteCode'] || row['Code'] || 'UNKNOWN').trim();
-    const siteCode = siteCodeRaw.toLowerCase();
-    const rawSiteName = String(row['Site'] || siteCodeRaw);
-    const siteName = cleanSiteName(rawSiteName, siteCodeRaw);
-    const mbu = String(row['MBU#'] || row['Region'] || 'C4-GUJ-01').trim();
-    const dtRaw = parseFloat(row['DT']) || 0;
-    const dtHours = dtRaw / 60;
-    const reason = String(row['Reasons'] || row['Reason Category'] || 'Commercial Power Grid').trim();
-    const category = String(row['Reason Category'] || row['General'] || 'Grid Power').trim();
-    const dateStr = excelDateToDateStr(row['Occurring']);
-    const vendor = String(row['Vendor'] || 'Huawei');
-    const siteType = String(row['SiteType'] || 'Macro');
-    const priority = String(row['Priority'] || 'General');
-
-    if (!siteMap[siteCode]) {
-      const swRow = siteWiseMap[siteCode] || {};
-      const ndRow = narDayMap[siteCode] || {};
-      // NAR from Site NAR-Day 'Average NAR' column (primary), fallback to SiteWiseDT 'Total NAR'
-      let totalNar = 99.0;
-      if (ndRow['Average NAR'] !== undefined && ndRow['Average NAR'] !== '' && !isNaN(ndRow['Average NAR'])) {
-        totalNar = parseFloat(ndRow['Average NAR']) * 100;
-      } else if (swRow['Total NAR'] !== undefined && swRow['Total NAR'] !== '' && !isNaN(swRow['Total NAR'])) {
-        totalNar = parseFloat(swRow['Total NAR']) * 100;
-      }
-      const totalDtMin = swRow['TDT'] !== undefined && swRow['TDT'] !== '' ? parseFloat(swRow['TDT']) : 0;
-      siteMap[siteCode] = {
-        siteCode: siteCodeRaw, siteName, mbu, vendor, siteType, priority,
-        totalDtHours: Number((totalDtMin / 60).toFixed(1)),
-        incidentCount: 0, availability: Number(totalNar.toFixed(2)),
-        reasons: {}, dailyDtMinutes: {}
-      };
-    }
-    siteMap[siteCode].incidentCount += 1;
-    siteMap[siteCode].reasons[reason] = (siteMap[siteCode].reasons[reason] || 0) + dtHours;
-    siteMap[siteCode].dailyDtMinutes[dateStr] = (siteMap[siteCode].dailyDtMinutes[dateStr] || 0) + dtRaw;
-
-    if (!reasonMap[reason]) reasonMap[reason] = { reason, category, totalDtHours: 0, incidentCount: 0 };
-    reasonMap[reason].totalDtHours += dtHours;
-    reasonMap[reason].incidentCount += 1;
-
-    if (!mbuMap[mbu]) mbuMap[mbu] = { mbu, totalDtHours: 0, incidentCount: 0, siteCount: new Set(), availSum: 0 };
-    mbuMap[mbu].totalDtHours += dtHours;
-    mbuMap[mbu].incidentCount += 1;
-    mbuMap[mbu].siteCount.add(siteCode);
-
-    if (!dailyTimelineMap[dateStr]) dailyTimelineMap[dateStr] = { date: dateStr, totalDtHours: 0, incidentCount: 0, mbus: {} };
-    dailyTimelineMap[dateStr].totalDtHours += dtHours;
-    dailyTimelineMap[dateStr].incidentCount += 1;
-    dailyTimelineMap[dateStr].mbus[mbu] = (dailyTimelineMap[dateStr].mbus[mbu] || 0) + dtHours;
-
-    if (i < 3000) {
-      allIncidents.push({
-        id: `RSL-${i+1}`, siteId: siteCodeRaw, siteName, region: mbu,
-        downtimeHours: Number(dtHours.toFixed(2)), availability: siteMap[siteCode].availability,
-        timestamp: dateStr, category, status: dtHours > 8 ? 'Active' : 'Resolved',
-        slaTarget: 99.90, rootCause: reason, mttrMinutes: Math.round(dtRaw)
-      });
-    }
+  // Initialize daily timeline map
+  fullDateRange.forEach(d => {
+    dailyTimelineMap[d] = { date: d, totalDtHours: 0, incidentCount: 0, narPercentSum: 0, siteCount: 0, mbus: {} };
   });
 
-  // Build site catalog with FULL daily timelines and 6-month history
-  const allSitesCatalog = Object.values(siteMap).map(s => {
-    const topReasonsList = Object.entries(s.reasons)
-      .map(([r, h]) => ({ reason: r, hours: Number(h.toFixed(1)) }))
-      .sort((a, b) => b.hours - a.hours).slice(0, 3);
+  // 4. Parse Site NAR-Day rows to build Deodar sites list
+  const deodarNarDayRows = narDayRows.filter(row => {
+    const code = String(row['Site Code'] || '').trim().toLowerCase();
+    return deodarSiteCodes.has(code);
+  });
 
-    const ndRow = narDayMap[s.siteCode.toLowerCase()] || {};
-    const swRow = siteWiseMap[s.siteCode.toLowerCase()] || {};
-
+  const allSitesCatalog = deodarNarDayRows.map(row => {
+    const siteCode = String(row['Site Code'] || '').trim();
+    const siteCodeLower = siteCode.toLowerCase();
+    const rawSiteName = String(row['Site Name'] || siteCode);
+    const siteName = cleanSiteName(rawSiteName, siteCode);
+    
+    const mbu = String(row['New MBU'] || 'C4-GUJ-01').trim();
+    const vendor = String(row['OMO Host Name'] || 'Huawei').trim();
+    const swRow = siteWiseMap[siteCodeLower] || {};
+    
+    const siteType = String(swRow['Type'] || 'Macro').trim();
+    const priority = String(swRow['Priority'] || 'General').trim();
+    
+    const tdtMinutes = parseFloat(swRow['TDT']) || 0;
+    const totalDtHours = Number((tdtMinutes / 60).toFixed(1));
+    
+    const narVal = parseFloat(row['Average NAR'] || row['avrg']) || 1.0;
+    const availability = Number((narVal * 100).toFixed(2));
+    
+    // Daily timeline
     const dailyTimeline = fullDateRange.map(dateStr => {
-      const narVal = getNarDayValue(ndRow, dateStr);
-      const narPercent = narVal !== undefined ? Number((narVal * 100).toFixed(2)) : 100;
-      const dtMinutes = getSiteWiseDtValue(swRow, dateStr);
-      return { date: dateStr, hours: Number((dtMinutes / 60).toFixed(1)), narPercent };
+      const narKey = ndDateMap[dateStr];
+      const dtKey = swDateMap[dateStr];
+      
+      const dayNarVal = row[narKey];
+      const narPercent = dayNarVal !== undefined && dayNarVal !== '' 
+        ? Number((parseFloat(dayNarVal) * 100).toFixed(2)) : 100;
+        
+      const dayDtVal = swRow[dtKey];
+      const hours = dayDtVal !== undefined && dayDtVal !== ''
+        ? Number((parseFloat(dayDtVal) / 60).toFixed(1)) : 0;
+        
+      return { date: dateStr, hours, narPercent };
     });
 
-    const nar6Months = extract6MonthNar(hist2gMap[s.siteCode.toLowerCase()]);
+    // 6-Month history
+    const nar6Months = extract6MonthNar(hist2gMap[siteCodeLower]);
+
+    // Site outages & reasons
+    const siteIncidents = rslRows.filter(r => String(r['SiteCode'] || r['Code'] || '').trim().toLowerCase() === siteCodeLower);
+    const sReasonsMap = {};
+    siteIncidents.forEach(r => {
+      const reason = String(r['Reasons'] || r['Reason Category'] || 'Commercial Power Grid').trim();
+      const dt = parseFloat(r['DT']) || 0;
+      sReasonsMap[reason] = (sReasonsMap[reason] || 0) + (dt / 60);
+    });
+    const topReasonsList = Object.entries(sReasonsMap)
+      .map(([reason, hours]) => ({ reason, hours: Number(hours.toFixed(1)) }))
+      .sort((a, b) => b.hours - a.hours).slice(0, 3);
+
+    // MBU overall stats accumulator
+    if (!mbuMap[mbu]) {
+      mbuMap[mbu] = { mbu, totalDtHours: 0, incidentCount: 0, siteCount: 0, availSum: 0 };
+    }
+    mbuMap[mbu].totalDtHours += totalDtHours;
+    mbuMap[mbu].incidentCount += siteIncidents.length;
+    mbuMap[mbu].siteCount++;
+    mbuMap[mbu].availSum += availability;
+
+    // Daily global timeline accumulator
+    dailyTimeline.forEach(day => {
+      const globalDay = dailyTimelineMap[day.date];
+      if (globalDay) {
+        globalDay.totalDtHours += day.hours;
+        globalDay.narPercentSum += day.narPercent;
+        globalDay.siteCount++;
+        globalDay.mbus[mbu] = (globalDay.mbus[mbu] || 0) + day.hours;
+      }
+    });
 
     return {
-      siteCode: s.siteCode, siteName: s.siteName, mbu: s.mbu, vendor: s.vendor,
-      siteType: s.siteType, priority: s.priority, totalDtHours: s.totalDtHours,
-      incidentCount: s.incidentCount, availability: s.availability,
-      nar6Months, topReasons: topReasonsList, dailyTimeline
+      siteCode, siteName, mbu, vendor, siteType, priority, totalDtHours,
+      incidentCount: siteIncidents.length, availability, nar6Months,
+      topReasons: topReasonsList, dailyTimeline
     };
   }).sort((a, b) => b.totalDtHours - a.totalDtHours);
 
-  allSitesCatalog.forEach(s => { if (mbuMap[s.mbu]) mbuMap[s.mbu].availSum += s.availability; });
-
-  const mbuFormatted = Object.entries(mbuMap).map(([mbu, data]) => ({
-    mbu, totalDtHours: Number(data.totalDtHours.toFixed(1)), incidentCount: data.incidentCount,
-    siteCount: data.siteCount.size, avgAvailability: Number((data.siteCount.size > 0 ? data.availSum / data.siteCount.size : 100).toFixed(2))
+  // 5. Format MBU breakdowns & global summaries
+  const mbuFormatted = Object.values(mbuMap).map(m => ({
+    mbu: m.mbu, totalDtHours: Number(m.totalDtHours.toFixed(1)), incidentCount: m.incidentCount,
+    siteCount: m.siteCount, avgAvailability: Number((m.availSum / m.siteCount).toFixed(2))
   })).sort((a, b) => b.totalDtHours - a.totalDtHours);
+
+  const dailyFormatted = fullDateRange.map(dateStr => {
+    const d = dailyTimelineMap[dateStr];
+    return {
+      date: dateStr,
+      totalDtHours: Number(d.totalDtHours.toFixed(1)),
+      incidentCount: d.incidentCount,
+      narPercent: Number((d.narPercentSum / Math.max(1, d.siteCount)).toFixed(2)),
+      mbus: d.mbus
+    };
+  });
+
+  // Reason mapping global
+  rslRows.forEach(row => {
+    const code = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
+    if (deodarSiteCodes.has(code)) {
+      const reason = String(row['Reasons'] || row['Reason Category'] || 'Commercial Power Grid').trim();
+      const category = String(row['Reason Category'] || row['General'] || 'Grid Power').trim();
+      const dtHours = (parseFloat(row['DT']) || 0) / 60;
+      
+      if (!reasonMap[reason]) reasonMap[reason] = { reason, category, totalDtHours: 0, incidentCount: 0 };
+      reasonMap[reason].totalDtHours += dtHours;
+      reasonMap[reason].incidentCount++;
+    }
+  });
 
   const reasonsFormatted = Object.values(reasonMap).map(r => ({
     reason: r.reason, category: r.category, totalDtHours: Number(r.totalDtHours.toFixed(1)), incidentCount: r.incidentCount
   })).sort((a, b) => b.totalDtHours - a.totalDtHours);
 
-  const dailyFormatted = fullDateRange.map(dateStr => {
-    const existing = dailyTimelineMap[dateStr];
-    const dwRow = dateWiseMap[dateStr] || {};
-    let narPercent = 99.85;
-    const mbuAvails = [];
-    Object.keys(dwRow).forEach(k => { if (k.startsWith('C4-')) { const v=parseFloat(dwRow[k]); if(!isNaN(v)) mbuAvails.push(v*100); } });
-    if (mbuAvails.length > 0) narPercent = mbuAvails.reduce((s,v)=>s+v,0) / mbuAvails.length;
-    return {
-      date: dateStr, totalDtHours: existing ? Number(existing.totalDtHours.toFixed(1)) : 0,
-      incidentCount: existing ? existing.incidentCount : 0, narPercent: Number(narPercent.toFixed(2)),
-      mbus: existing ? existing.mbus : {}
-    };
+  // Parse incidents (max 3000)
+  let incidentIdx = 0;
+  rslRows.forEach(row => {
+    const code = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
+    if (deodarSiteCodes.has(code) && incidentIdx < 3000) {
+      const siteCodeRaw = String(row['SiteCode'] || row['Code'] || 'UNKNOWN').trim();
+      const rawSiteName = String(row['Site'] || siteCodeRaw);
+      const siteName = cleanSiteName(rawSiteName, siteCodeRaw);
+      const mbu = String(row['MBU#'] || row['Region'] || 'C4-GUJ-01').trim();
+      const dtRaw = parseFloat(row['DT']) || 0;
+      const dtHours = dtRaw / 60;
+      const reason = String(row['Reasons'] || row['Reason Category'] || 'Commercial Power Grid').trim();
+      const category = String(row['Reason Category'] || row['General'] || 'Grid Power').trim();
+      const dateStr = excelDateToDateStr(row['Occurring']);
+
+      allIncidents.push({
+        id: `RSL-${incidentIdx + 1}`, siteId: siteCodeRaw, siteName, region: mbu,
+        downtimeHours: Number(dtHours.toFixed(2)), availability: 99.0,
+        timestamp: dateStr, category, status: dtHours > 8 ? 'Active' : 'Resolved',
+        slaTarget: 99.90, rootCause: reason, mttrMinutes: Math.round(dtRaw)
+      });
+      incidentIdx++;
+    }
   });
 
-  const sumAvail = allSitesCatalog.reduce((s,x) => s+x.availability, 0);
+  const sumAvail = allSitesCatalog.reduce((s, x) => s + x.availability, 0);
   const avgAvail = allSitesCatalog.length > 0 ? sumAvail / allSitesCatalog.length : 100;
-  const totalDtHours = allSitesCatalog.reduce((s,x) => s+x.totalDtHours, 0);
+  const totalDtHours = allSitesCatalog.reduce((s, x) => s + x.totalDtHours, 0);
 
   state.parsedPayload = {
-    summary: { totalRawRecords: deodarRslRows.length, totalDowntimeHours: Number(totalDtHours.toFixed(1)), totalSites: allSitesCatalog.length, avgAvailability: Number(avgAvail.toFixed(2)) },
-    allSites: allSitesCatalog, topReasons: reasonsFormatted, mbuBreakdown: mbuFormatted,
-    dailyTimeline: dailyFormatted, sampleIncidents: allIncidents
+    summary: {
+      totalRawRecords: allIncidents.length,
+      totalDowntimeHours: Number(totalDtHours.toFixed(1)),
+      totalSites: allSitesCatalog.length,
+      avgAvailability: Number(avgAvail.toFixed(2))
+    },
+    allSites: allSitesCatalog,
+    topReasons: reasonsFormatted,
+    mbuBreakdown: mbuFormatted,
+    dailyTimeline: dailyFormatted,
+    sampleIncidents: allIncidents
   };
 
   document.getElementById('stat-sites').textContent = state.parsedPayload.summary.totalSites;
