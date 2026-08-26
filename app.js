@@ -146,21 +146,11 @@ function processTelemetryData() {
 
   log(`Read worksheets. RSL: ${rslRows.length}, SiteWiseDT: ${siteWiseRows.length}, NARDay: ${narDayRows.length}, DateWiseDT: ${dateWiseRows.length}, 4G CounterBased: ${cbRows.length}`);
 
-  // 1. Identify Deodar Site Codes (Union of RSL status and 4G Colocation/Host)
+  // 1. Identify Deodar Site Codes (Only sites hosted by DEODAR or JAZZ)
   const deodarSiteCodes = new Set();
-  rslRows.forEach(row => {
-    const val = String(row['Deodar/NonDeodar'] || '').trim().toLowerCase();
-    if (val === 'deodar' || val === 'force-majure-deodar') {
-      const code = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
-      if (code) deodarSiteCodes.add(code);
-    }
-  });
-
   cbRows.forEach(row => {
-    const omoColoc = String(row['OMO Colocation'] || '').trim().toLowerCase();
-    const omoHost = String(row['OMO host name '] || '').trim().toLowerCase();
-    const category = String(row['Category'] || '').trim().toLowerCase();
-    if (omoColoc === 'deodar' || omoHost === 'deodar' || category === 'deodar cp prime') {
+    const omoHost = String(row['OMO host name '] || '').trim().toUpperCase();
+    if (omoHost === 'DEODAR' || omoHost === 'JAZZ') {
       const code = String(row['SiteCode'] || '').trim().toLowerCase();
       if (code) deodarSiteCodes.add(code);
     }
