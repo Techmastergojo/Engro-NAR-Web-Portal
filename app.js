@@ -303,11 +303,9 @@ async function publishToGitHub() {
   button.textContent = 'Publishing to GitHub...';
 
   try {
-    const jsonStr = JSON.stringify(state.parsedPayload, null, 2);
-    const contentBase64 = btoa(unescape(encodeURIComponent(jsonStr)));
-    
-    // 1. Fetch current file SHA if it exists
+    // 1. Fetch current file from GitHub (to merge with)
     let sha = '';
+    let existingData = null;
     const lookupUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`;
     
     const lookupRes = await fetch(lookupUrl, {
@@ -320,17 +318,40 @@ async function publishToGitHub() {
     if (lookupRes.ok) {
       const lookupData = await lookupRes.json();
       sha = lookupData.sha;
-      log(`Found existing file on GitHub (SHA: ${sha.substring(0, 7)}). Updating...`);
+      log(`Found existing data on GitHub (SHA: ${sha.substring(0, 7)}). Fetching for merge...`);
+      
+      // Decode existing content
+      try {
+        const existingJson = decodeURIComponent(escape(atob(lookupData.content.replace(/\n/g, ''))));
+        existingData = JSON.parse(existingJson);
+        log(`Existing data loaded: ${existingData.allSites?.length || 0} sites, ${existingData.dailyTimeline?.length || 0} timeline days.`);
+      } catch (decodeErr) {
+        log(`Warning: Could not decode existing data (${decodeErr.message}). Will overwrite with new data.`, 'warn');
+        existingData = null;
+      }
     } else if (lookupRes.status === 404) {
-      log('File does not exist on target path. Creating new file...');
+      log('No existing data on GitHub. Creating fresh file...');
     } else {
       throw new Error(`Failed to lookup file metadata (Status ${lookupRes.status})`);
     }
 
-    // 2. Commit / Push file update
+    // 2. Merge new data with existing data
+    let finalPayload;
+    if (existingData && existingData.allSites) {
+      log('Merging new data with existing records...');
+      finalPayload = mergePayloads(existingData, state.parsedPayload);
+      log(`Merge complete! ${finalPayload.allSites.length} total sites, ${finalPayload.dailyTimeline.length} timeline days.`, 'success');
+    } else {
+      finalPayload = state.parsedPayload;
+    }
+
+    // 3. Commit / Push merged result
+    const jsonStr = JSON.stringify(finalPayload, null, 2);
+    const contentBase64 = btoa(unescape(encodeURIComponent(jsonStr)));
+    
     const commitUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
     const commitBody = {
-      message: `update telemetry: ${state.parsedPayload.summary.totalSites} sites (NAR: ${state.parsedPayload.summary.avgAvailability}%)`,
+      message: `update telemetry: ${finalPayload.summary.totalSites} sites, ${finalPayload.dailyTimeline.length} days (NAR: ${finalPayload.summary.avgAvailability}%)`,
       content: contentBase64,
       branch
     };
@@ -351,7 +372,7 @@ async function publishToGitHub() {
     if (commitRes.ok) {
       const commitData = await commitRes.json();
       log(`Live Telemetry Successfully Published! Commit SHA: ${commitData.commit.sha.substring(0, 7)}`, 'success');
-      alert(`Success! Live Telemetry published. Mobile app users can now sync instantly.`);
+      alert(`Success! Telemetry published with ${finalPayload.allSites.length} sites and ${finalPayload.dailyTimeline.length} days of history.`);
     } else {
       const errorMsg = await commitRes.text();
       throw new Error(`GitHub API commit failed: ${errorMsg}`);
@@ -362,6 +383,141 @@ async function publishToGitHub() {
     button.disabled = false;
     button.textContent = 'Publish Telemetry to Live App';
   }
+}
+
+// Merge new parsed data INTO existing data (append, don't replace)
+function mergePayloads(existing, incoming) {
+  // --- Merge allSites ---
+  const siteMap = {};
+  // Index existing sites by siteCode
+  (existing.allSites || []).forEach(s => { siteMap[s.siteCode.toLowerCase()] = { ...s }; });
+
+  // Merge incoming sites
+  (incoming.allSites || []).forEach(s => {
+    const key = s.siteCode.toLowerCase();
+    if (siteMap[key]) {
+      // Site exists — merge timelines and update stats
+      const old = siteMap[key];
+
+      // Merge dailyTimeline: keep existing days, add new ones
+      const existingDates = new Set(old.dailyTimeline.map(d => d.date));
+      const mergedTimeline = [...old.dailyTimeline];
+      (s.dailyTimeline || []).forEach(d => {
+        if (!existingDates.has(d.date)) {
+          mergedTimeline.push(d);
+        } else {
+          // Update existing day with newer data
+          const idx = mergedTimeline.findIndex(x => x.date === d.date);
+          if (idx !== -1) mergedTimeline[idx] = d;
+        }
+      });
+      mergedTimeline.sort((a, b) => a.date.localeCompare(b.date));
+      old.dailyTimeline = mergedTimeline;
+
+      // Merge nar6Months: keep old months, add/update new ones
+      const existingMonths = new Set((old.nar6Months || []).map(m => m.monthKey));
+      const merged6m = [...(old.nar6Months || [])];
+      (s.nar6Months || []).forEach(m => {
+        if (!existingMonths.has(m.monthKey)) {
+          merged6m.push(m);
+        } else {
+          const idx = merged6m.findIndex(x => x.monthKey === m.monthKey);
+          if (idx !== -1) merged6m[idx] = m;
+        }
+      });
+      merged6m.sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+      old.nar6Months = merged6m;
+
+      // Update latest stats (from newer file)
+      old.availability = s.availability;
+      old.totalDtHours = Number((old.totalDtHours + s.totalDtHours).toFixed(1));
+      old.incidentCount = old.incidentCount + s.incidentCount;
+
+      // Merge topReasons (accumulate hours)
+      const reasonsMap = {};
+      (old.topReasons || []).forEach(r => { reasonsMap[r.reason] = r.hours; });
+      (s.topReasons || []).forEach(r => { reasonsMap[r.reason] = (reasonsMap[r.reason] || 0) + r.hours; });
+      old.topReasons = Object.entries(reasonsMap)
+        .map(([reason, hours]) => ({ reason, hours: Number(hours.toFixed(1)) }))
+        .sort((a, b) => b.hours - a.hours).slice(0, 5);
+
+      siteMap[key] = old;
+    } else {
+      // Brand new site — add it
+      siteMap[key] = { ...s };
+    }
+  });
+
+  const allSites = Object.values(siteMap).sort((a, b) => b.totalDtHours - a.totalDtHours);
+
+  // --- Merge dailyTimeline (global) ---
+  const dayMap = {};
+  (existing.dailyTimeline || []).forEach(d => { dayMap[d.date] = { ...d }; });
+  (incoming.dailyTimeline || []).forEach(d => {
+    if (!dayMap[d.date]) {
+      dayMap[d.date] = { ...d };
+    } else {
+      // Update with newer data for this date
+      dayMap[d.date] = { ...d };
+    }
+  });
+  const dailyTimeline = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
+
+  // --- Merge topReasons ---
+  const reasonsMap = {};
+  (existing.topReasons || []).forEach(r => { reasonsMap[r.reason] = { ...r }; });
+  (incoming.topReasons || []).forEach(r => {
+    if (reasonsMap[r.reason]) {
+      reasonsMap[r.reason].totalDtHours = Number((reasonsMap[r.reason].totalDtHours + r.totalDtHours).toFixed(1));
+      reasonsMap[r.reason].incidentCount += r.incidentCount;
+    } else {
+      reasonsMap[r.reason] = { ...r };
+    }
+  });
+  const topReasons = Object.values(reasonsMap).sort((a, b) => b.totalDtHours - a.totalDtHours);
+
+  // --- Merge mbuBreakdown ---
+  const mbuMap = {};
+  (existing.mbuBreakdown || []).forEach(m => { mbuMap[m.mbu] = { ...m }; });
+  (incoming.mbuBreakdown || []).forEach(m => {
+    if (mbuMap[m.mbu]) {
+      mbuMap[m.mbu].totalDtHours = Number((mbuMap[m.mbu].totalDtHours + m.totalDtHours).toFixed(1));
+      mbuMap[m.mbu].incidentCount += m.incidentCount;
+      mbuMap[m.mbu].siteCount = Math.max(mbuMap[m.mbu].siteCount, m.siteCount);
+      mbuMap[m.mbu].avgAvailability = m.avgAvailability; // latest value
+    } else {
+      mbuMap[m.mbu] = { ...m };
+    }
+  });
+  const mbuBreakdown = Object.values(mbuMap).sort((a, b) => b.totalDtHours - a.totalDtHours);
+
+  // --- Merge sampleIncidents (append new, deduplicate by id) ---
+  const incidentIds = new Set((existing.sampleIncidents || []).map(i => i.id));
+  const mergedIncidents = [...(existing.sampleIncidents || [])];
+  (incoming.sampleIncidents || []).forEach(inc => {
+    // Assign new unique ID to avoid collision
+    const newId = `RSL-${mergedIncidents.length + 1}`;
+    mergedIncidents.push({ ...inc, id: newId });
+  });
+
+  // --- Recalculate summary ---
+  const sumAvail = allSites.reduce((s, x) => s + x.availability, 0);
+  const avgAvail = allSites.length > 0 ? sumAvail / allSites.length : 100;
+  const totalDtHours = allSites.reduce((s, x) => s + x.totalDtHours, 0);
+
+  return {
+    summary: {
+      totalRawRecords: (existing.summary?.totalRawRecords || 0) + (incoming.summary?.totalRawRecords || 0),
+      totalDowntimeHours: Number(totalDtHours.toFixed(1)),
+      totalSites: allSites.length,
+      avgAvailability: Number(avgAvail.toFixed(2))
+    },
+    allSites,
+    topReasons,
+    mbuBreakdown,
+    dailyTimeline,
+    sampleIncidents: mergedIncidents
+  };
 }
 
 // UI Event Handlers
