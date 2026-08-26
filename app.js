@@ -37,20 +37,60 @@ function excelDateToDateStr(excelDate) {
   return `${y}-${m}-${d}`;
 }
 
-// Helper to look up daily column in SheetJS rows
-function getDailyValue(row, dateStr) {
-  for (const [key, val] of Object.entries(row)) {
-    let normKey;
-    if (!isNaN(key)) {
-      normKey = excelDateToDateStr(parseFloat(key));
-    } else {
-      normKey = excelDateToDateStr(key);
-    }
-    if (normKey === dateStr && val !== undefined && val !== '') {
-      return parseFloat(val);
+// Helper to build "1-Aug" style key from YYYY-MM-DD
+function dateStrToAugKey(dateStr) {
+  return parseInt(dateStr.split('-')[2], 10) + '-Aug';
+}
+
+// Look up NAR from Site NAR-Day using "1-Aug" keys
+function getNarDayValue(narDayRow, dateStr) {
+  const key = dateStrToAugKey(dateStr);
+  const val = narDayRow[key];
+  if (val !== undefined && val !== '' && !isNaN(val)) return parseFloat(val);
+  return undefined;
+}
+
+// Look up DT from SiteWiseDT using "1-Aug" keys
+function getSiteWiseDtValue(swRow, dateStr) {
+  const key = dateStrToAugKey(dateStr);
+  const val = swRow[key];
+  if (val !== undefined && val !== '' && !isNaN(val)) return parseFloat(val);
+  return 0;
+}
+
+// Clean site name: strip site code prefix
+function cleanSiteName(rawName, siteCode) {
+  let name = rawName;
+  name = name.replace(/^[A-Z0-9]+__[A-Z]_/, '');
+  name = name.replace(/^[A-Z0-9]+_[A-Z]_/, '');
+  if (name.startsWith(siteCode)) name = name.substring(siteCode.length);
+  name = name.replace(/^[_ ]+/, '').replace(/_/g, ' ').trim();
+  return name || siteCode;
+}
+
+// Extract 6-month NAR from 2G Site Month Wise History
+function extract6MonthNar(histRow) {
+  if (!histRow) return [];
+  const mappings = [
+    { narKey: 'Feb NAR',       monthKey: '2026-02', label: 'Feb 2026' },
+    { narKey: 'Mar NAR',       monthKey: '2026-03', label: 'Mar 2026' },
+    { narKey: 'April NAR_1',   monthKey: '2026-04', label: 'Apr 2026' },
+    { narKey: 'May NAR_1',     monthKey: '2026-05', label: 'May 2026' },
+    { narKey: 'June NAR 2026', monthKey: '2026-06', label: 'Jun 2026' },
+    { narKey: 'Jul NAR 2026',  monthKey: '2026-07', label: 'Jul 2026' },
+  ];
+  const results = [];
+  for (const m of mappings) {
+    const val = histRow[m.narKey];
+    if (val !== undefined && val !== '' && !isNaN(val)) {
+      results.push({
+        monthKey: m.monthKey, monthLabel: m.label,
+        narPercent: Number((parseFloat(val) * 100).toFixed(2)),
+        totalDowntimeHours: 0, totalAlarms: 0
+      });
     }
   }
-  return undefined;
+  return results;
 }
 
 // Process Ingested Excel Workbook
@@ -67,58 +107,55 @@ function processTelemetryData() {
   const siteWiseSheet = workbook.Sheets['SiteWiseDT'];
   const narDaySheet = workbook.Sheets['Site NAR-Day'];
   const dateWiseSheet = workbook.Sheets['DateWiseDT'];
+  const hist2gSheet = workbook.Sheets['2G Site Month Wise History'];
 
   if (!rslSheet || !siteWiseSheet || !narDaySheet || !dateWiseSheet) {
-    log('Processing error: Missing required worksheets inside the workbook. Make sure sheets Consolidated RSL Aug-26, SiteWiseDT, Site NAR-Day, and DateWiseDT are present.', 'error');
+    log('Processing error: Missing required worksheets.', 'error');
     return;
   }
 
-  // Parse worksheets to JSON
   const rslRows = XLSX.utils.sheet_to_json(rslSheet, { defval: '' });
   const siteWiseRows = XLSX.utils.sheet_to_json(siteWiseSheet, { defval: '' });
   const narDayRows = XLSX.utils.sheet_to_json(narDaySheet, { defval: '' });
   const dateWiseRows = XLSX.utils.sheet_to_json(dateWiseSheet, { defval: '' });
+  const hist2gRows = hist2gSheet ? XLSX.utils.sheet_to_json(hist2gSheet, { defval: '' }) : [];
 
-  log(`Successfully read worksheets from XLSX. Consolidated RSL rows: ${rslRows.length}, SiteWiseDT rows: ${siteWiseRows.length}, Site NAR-Day rows: ${narDayRows.length}, DateWiseDT rows: ${dateWiseRows.length}`);
+  log(`Read worksheets. RSL: ${rslRows.length}, SiteWiseDT: ${siteWiseRows.length}, NARDay: ${narDayRows.length}, DateWiseDT: ${dateWiseRows.length}, 2G History: ${hist2gRows.length}`);
 
-  // 1. Identify Deodar Sites
+  // Identify Deodar sites
   const deodarSiteCodes = new Set();
   rslRows.forEach(row => {
-    const isDeodar = String(row['Deodar/NonDeodar'] || '').toLowerCase().trim() === 'deodar';
-    if (isDeodar) {
-      const siteCode = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
-      if (siteCode) deodarSiteCodes.add(siteCode);
+    if (String(row['Deodar/NonDeodar'] || '').toLowerCase().trim() === 'deodar') {
+      const code = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
+      if (code) deodarSiteCodes.add(code);
     }
   });
-
   const deodarRslRows = rslRows.filter(row => {
-    const siteCode = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
-    return deodarSiteCodes.has(siteCode);
+    return deodarSiteCodes.has(String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase());
   });
+  log(`Filtered ${deodarSiteCodes.size} Deodar sites, ${deodarRslRows.length} incidents.`);
 
-  log(`Filtered ${deodarSiteCodes.size} unique Deodar sites representing ${deodarRslRows.length} incidents.`);
-
-  // Mapping structures
+  // Build lookup maps
   const siteWiseMap = {};
-  siteWiseRows.forEach(row => {
-    const code = String(row['Site Code'] || '').trim().toLowerCase();
-    if (code) siteWiseMap[code] = row;
-  });
-
+  siteWiseRows.forEach(row => { const c = String(row['Site Code']||'').trim().toLowerCase(); if(c) siteWiseMap[c]=row; });
   const narDayMap = {};
-  narDayRows.forEach(row => {
-    const code = String(row['Site Code'] || '').trim().toLowerCase();
-    if (code) narDayMap[code] = row;
-  });
-
+  narDayRows.forEach(row => { const c = String(row['Site Code']||'').trim().toLowerCase(); if(c) narDayMap[c]=row; });
+  const hist2gMap = {};
+  hist2gRows.forEach(row => { const c = String(row['Site Code']||'').trim().toLowerCase(); if(c) hist2gMap[c]=row; });
   const dateWiseMap = {};
-  dateWiseRows.forEach(row => {
-    const mbuVal = row['MBU'];
-    if (mbuVal) {
-      const dateStr = excelDateToDateStr(mbuVal);
-      dateWiseMap[dateStr] = row;
-    }
+  dateWiseRows.forEach(row => { const v=row['MBU']; if(v) dateWiseMap[excelDateToDateStr(v)]=row; });
+
+  // Determine all active dates
+  const allDatesSet = new Set();
+  deodarRslRows.forEach(row => {
+    const d = excelDateToDateStr(row['Occurring']);
+    if (d.startsWith('2026-08')) allDatesSet.add(d);
   });
+  const allDates = Array.from(allDatesSet).sort();
+  const maxDate = allDates[allDates.length - 1] || '2026-08-24';
+  const maxDay = parseInt(maxDate.split('-')[2], 10);
+  const fullDateRange = [];
+  for (let d = 1; d <= maxDay; d++) fullDateRange.push(`2026-08-${String(d).padStart(2,'0')}`);
 
   const siteMap = {};
   const reasonMap = {};
@@ -130,13 +167,10 @@ function processTelemetryData() {
     const siteCodeRaw = String(row['SiteCode'] || row['Code'] || 'UNKNOWN').trim();
     const siteCode = siteCodeRaw.toLowerCase();
     const rawSiteName = String(row['Site'] || siteCodeRaw);
-    const siteName = rawSiteName.replace(/^[A-Z0-9]+__S_/, '').replace(/^[A-Z0-9]+_H_/, '').replace(/_/g, ' ');
+    const siteName = cleanSiteName(rawSiteName, siteCodeRaw);
     const mbu = String(row['MBU#'] || row['Region'] || 'C4-GUJ-01').trim();
-    
-    // DT in RSL is in minutes, convert to hours
     const dtRaw = parseFloat(row['DT']) || 0;
     const dtHours = dtRaw / 60;
-    
     const reason = String(row['Reasons'] || row['Reason Category'] || 'Commercial Power Grid').trim();
     const category = String(row['Reason Category'] || row['General'] || 'Grid Power').trim();
     const dateStr = excelDateToDateStr(row['Occurring']);
@@ -146,171 +180,110 @@ function processTelemetryData() {
 
     if (!siteMap[siteCode]) {
       const swRow = siteWiseMap[siteCode] || {};
-      const excelAvail = swRow['Total NAR'] !== undefined && swRow['Total NAR'] !== '' ? parseFloat(swRow['Total NAR']) * 100 : 99.0;
-      const excelDtHours = swRow['TDT'] !== undefined && swRow['TDT'] !== '' ? parseFloat(swRow['TDT']) / 60 : 0;
-
+      const totalNar = swRow['Total NAR'] !== undefined && swRow['Total NAR'] !== '' ? parseFloat(swRow['Total NAR']) * 100 : 99.0;
+      const totalDtMin = swRow['TDT'] !== undefined && swRow['TDT'] !== '' ? parseFloat(swRow['TDT']) : 0;
       siteMap[siteCode] = {
-        siteCode: siteCodeRaw,
-        siteName,
-        mbu,
-        vendor,
-        siteType,
-        priority,
-        totalDtHours: excelDtHours,
-        incidentCount: 0,
-        availability: Number(excelAvail.toFixed(2)),
-        reasons: {},
-        dailyDt: {}
+        siteCode: siteCodeRaw, siteName, mbu, vendor, siteType, priority,
+        totalDtHours: Number((totalDtMin / 60).toFixed(1)),
+        incidentCount: 0, availability: Number(totalNar.toFixed(2)),
+        reasons: {}, dailyDtMinutes: {}
       };
     }
     siteMap[siteCode].incidentCount += 1;
     siteMap[siteCode].reasons[reason] = (siteMap[siteCode].reasons[reason] || 0) + dtHours;
-    siteMap[siteCode].dailyDt[dateStr] = (siteMap[siteCode].dailyDt[dateStr] || 0) + dtHours;
+    siteMap[siteCode].dailyDtMinutes[dateStr] = (siteMap[siteCode].dailyDtMinutes[dateStr] || 0) + dtRaw;
 
-    if (!reasonMap[reason]) {
-      reasonMap[reason] = { reason, category, totalDtHours: 0, incidentCount: 0 };
-    }
+    if (!reasonMap[reason]) reasonMap[reason] = { reason, category, totalDtHours: 0, incidentCount: 0 };
     reasonMap[reason].totalDtHours += dtHours;
     reasonMap[reason].incidentCount += 1;
 
-    if (!mbuMap[mbu]) {
-      mbuMap[mbu] = { mbu, totalDtHours: 0, incidentCount: 0, siteCount: new Set(), availSum: 0 };
-    }
+    if (!mbuMap[mbu]) mbuMap[mbu] = { mbu, totalDtHours: 0, incidentCount: 0, siteCount: new Set(), availSum: 0 };
     mbuMap[mbu].totalDtHours += dtHours;
     mbuMap[mbu].incidentCount += 1;
     mbuMap[mbu].siteCount.add(siteCode);
 
-    if (!dailyTimelineMap[dateStr]) {
-      dailyTimelineMap[dateStr] = { date: dateStr, totalDtHours: 0, incidentCount: 0, mbus: {} };
-    }
+    if (!dailyTimelineMap[dateStr]) dailyTimelineMap[dateStr] = { date: dateStr, totalDtHours: 0, incidentCount: 0, mbus: {} };
     dailyTimelineMap[dateStr].totalDtHours += dtHours;
     dailyTimelineMap[dateStr].incidentCount += 1;
     dailyTimelineMap[dateStr].mbus[mbu] = (dailyTimelineMap[dateStr].mbus[mbu] || 0) + dtHours;
 
     if (i < 3000) {
-      const swRow = siteWiseMap[siteCode] || {};
-      const excelAvail = swRow['Total NAR'] !== undefined && swRow['Total NAR'] !== '' ? parseFloat(swRow['Total NAR']) * 100 : 99.0;
       allIncidents.push({
-        id: `RSL-${i + 1}`,
-        siteId: siteCodeRaw,
-        siteName: siteName,
-        region: mbu,
-        downtimeHours: Number(dtHours.toFixed(2)),
-        availability: Number(excelAvail.toFixed(2)),
-        timestamp: dateStr,
-        category: category,
-        status: dtHours > 8 ? 'Active' : 'Resolved',
-        slaTarget: 99.90,
-        rootCause: reason,
-        mttrMinutes: Math.round(dtRaw)
+        id: `RSL-${i+1}`, siteId: siteCodeRaw, siteName, region: mbu,
+        downtimeHours: Number(dtHours.toFixed(2)), availability: siteMap[siteCode].availability,
+        timestamp: dateStr, category, status: dtHours > 8 ? 'Active' : 'Resolved',
+        slaTarget: 99.90, rootCause: reason, mttrMinutes: Math.round(dtRaw)
       });
     }
   });
 
+  // Build site catalog with FULL daily timelines and 6-month history
   const allSitesCatalog = Object.values(siteMap).map(s => {
     const topReasonsList = Object.entries(s.reasons)
       .map(([r, h]) => ({ reason: r, hours: Number(h.toFixed(1)) }))
-      .sort((a, b) => b.hours - a.hours)
-      .slice(0, 3);
-    
+      .sort((a, b) => b.hours - a.hours).slice(0, 3);
+
     const ndRow = narDayMap[s.siteCode.toLowerCase()] || {};
-    const dailyTimeline = Object.entries(s.dailyDt).map(([d, h]) => {
-      const excelDailyNarVal = getDailyValue(ndRow, d);
-      const excelDailyNar = excelDailyNarVal !== undefined ? excelDailyNarVal * 100 : 100;
-      return {
-        date: d,
-        hours: Number(h.toFixed(1)),
-        narPercent: Number(excelDailyNar.toFixed(2))
-      };
+    const swRow = siteWiseMap[s.siteCode.toLowerCase()] || {};
+
+    const dailyTimeline = fullDateRange.map(dateStr => {
+      const narVal = getNarDayValue(ndRow, dateStr);
+      const narPercent = narVal !== undefined ? Number((narVal * 100).toFixed(2)) : 100;
+      const dtMinutes = getSiteWiseDtValue(swRow, dateStr);
+      return { date: dateStr, hours: Number((dtMinutes / 60).toFixed(1)), narPercent };
     });
 
+    const nar6Months = extract6MonthNar(hist2gMap[s.siteCode.toLowerCase()]);
+
     return {
-      siteCode: s.siteCode,
-      siteName: s.siteName,
-      mbu: s.mbu,
-      vendor: s.vendor,
-      siteType: s.siteType,
-      priority: s.priority,
-      totalDtHours: Number(s.totalDtHours.toFixed(1)),
-      incidentCount: s.incidentCount,
-      availability: s.availability,
-      topReasons: topReasonsList,
-      dailyTimeline: dailyTimeline.sort((a, b) => a.date.localeCompare(b.date))
+      siteCode: s.siteCode, siteName: s.siteName, mbu: s.mbu, vendor: s.vendor,
+      siteType: s.siteType, priority: s.priority, totalDtHours: s.totalDtHours,
+      incidentCount: s.incidentCount, availability: s.availability,
+      nar6Months, topReasons: topReasonsList, dailyTimeline
     };
   }).sort((a, b) => b.totalDtHours - a.totalDtHours);
 
-  allSitesCatalog.forEach(s => {
-    if (mbuMap[s.mbu]) mbuMap[s.mbu].availSum += s.availability;
-  });
+  allSitesCatalog.forEach(s => { if (mbuMap[s.mbu]) mbuMap[s.mbu].availSum += s.availability; });
 
-  const mbuFormatted = Object.entries(mbuMap).map(([mbu, data]) => {
-    const avgAvail = data.siteCount.size > 0 ? (data.availSum / data.siteCount.size) : 100;
-    return {
-      mbu,
-      totalDtHours: Number((data.totalDtHours).toFixed(1)),
-      incidentCount: data.incidentCount,
-      siteCount: data.siteCount.size,
-      avgAvailability: Number(avgAvail.toFixed(2))
-    };
-  }).sort((a, b) => b.totalDtHours - a.totalDtHours);
-
-  const reasonsFormatted = Object.values(reasonMap).map(r => ({
-    reason: r.reason,
-    category: r.category,
-    totalDtHours: Number(r.totalDtHours.toFixed(1)),
-    incidentCount: r.incidentCount
+  const mbuFormatted = Object.entries(mbuMap).map(([mbu, data]) => ({
+    mbu, totalDtHours: Number(data.totalDtHours.toFixed(1)), incidentCount: data.incidentCount,
+    siteCount: data.siteCount.size, avgAvailability: Number((data.siteCount.size > 0 ? data.availSum / data.siteCount.size : 100).toFixed(2))
   })).sort((a, b) => b.totalDtHours - a.totalDtHours);
 
-  const dailyFormatted = Object.values(dailyTimelineMap).map(d => {
-    const dwRow = dateWiseMap[d.date] || {};
+  const reasonsFormatted = Object.values(reasonMap).map(r => ({
+    reason: r.reason, category: r.category, totalDtHours: Number(r.totalDtHours.toFixed(1)), incidentCount: r.incidentCount
+  })).sort((a, b) => b.totalDtHours - a.totalDtHours);
+
+  const dailyFormatted = fullDateRange.map(dateStr => {
+    const existing = dailyTimelineMap[dateStr];
+    const dwRow = dateWiseMap[dateStr] || {};
     let narPercent = 99.85;
     const mbuAvails = [];
-    Object.keys(dwRow).forEach(k => {
-      if (k.startsWith('C4-')) {
-        const val = parseFloat(dwRow[k]);
-        if (!isNaN(val)) mbuAvails.push(val * 100);
-      }
-    });
-    if (mbuAvails.length > 0) {
-      narPercent = mbuAvails.reduce((sum, v) => sum + v, 0) / mbuAvails.length;
-    }
-
+    Object.keys(dwRow).forEach(k => { if (k.startsWith('C4-')) { const v=parseFloat(dwRow[k]); if(!isNaN(v)) mbuAvails.push(v*100); } });
+    if (mbuAvails.length > 0) narPercent = mbuAvails.reduce((s,v)=>s+v,0) / mbuAvails.length;
     return {
-      date: d.date,
-      totalDtHours: Number(d.totalDtHours.toFixed(1)),
-      incidentCount: d.incidentCount,
-      narPercent: Number(narPercent.toFixed(2)),
-      mbus: d.mbus
+      date: dateStr, totalDtHours: existing ? Number(existing.totalDtHours.toFixed(1)) : 0,
+      incidentCount: existing ? existing.incidentCount : 0, narPercent: Number(narPercent.toFixed(2)),
+      mbus: existing ? existing.mbus : {}
     };
-  }).sort((a, b) => a.date.localeCompare(b.date));
+  });
 
-  const sumAvail = allSitesCatalog.reduce((sum, s) => sum + s.availability, 0);
-  const avgAvail = allSitesCatalog.length > 0 ? (sumAvail / allSitesCatalog.length) : 100;
-  const totalSitesDowntimeHours = allSitesCatalog.reduce((sum, s) => sum + s.totalDtHours, 0);
+  const sumAvail = allSitesCatalog.reduce((s,x) => s+x.availability, 0);
+  const avgAvail = allSitesCatalog.length > 0 ? sumAvail / allSitesCatalog.length : 100;
+  const totalDtHours = allSitesCatalog.reduce((s,x) => s+x.totalDtHours, 0);
 
   state.parsedPayload = {
-    summary: {
-      totalRawRecords: deodarRslRows.length,
-      totalDowntimeHours: Number(totalSitesDowntimeHours.toFixed(1)),
-      totalSites: allSitesCatalog.length,
-      avgAvailability: Number(avgAvail.toFixed(2))
-    },
-    allSites: allSitesCatalog,
-    topReasons: reasonsFormatted,
-    mbuBreakdown: mbuFormatted,
-    dailyTimeline: dailyFormatted,
-    sampleIncidents: allIncidents
+    summary: { totalRawRecords: deodarRslRows.length, totalDowntimeHours: Number(totalDtHours.toFixed(1)), totalSites: allSitesCatalog.length, avgAvailability: Number(avgAvail.toFixed(2)) },
+    allSites: allSitesCatalog, topReasons: reasonsFormatted, mbuBreakdown: mbuFormatted,
+    dailyTimeline: dailyFormatted, sampleIncidents: allIncidents
   };
 
-  // Render metrics to UI
   document.getElementById('stat-sites').textContent = state.parsedPayload.summary.totalSites;
   document.getElementById('stat-nar').textContent = `${state.parsedPayload.summary.avgAvailability}%`;
   document.getElementById('stat-incidents').textContent = state.parsedPayload.summary.totalRawRecords.toLocaleString();
   document.getElementById('stat-downtime').textContent = state.parsedPayload.summary.totalDowntimeHours.toLocaleString();
 
   log('Compilation complete! Telemetry payload generated successfully.', 'success');
-  
-  // Enable Publish button
   document.getElementById('publish-btn').classList.remove('disabled');
   document.getElementById('publish-btn').disabled = false;
 }
