@@ -39,14 +39,17 @@ function excelDateToDateStr(excelDate) {
 
 // Helper to look up daily column in SheetJS rows
 function getDailyValue(row, dateStr) {
-  const dayNum = parseInt(dateStr.split('-')[2] || '1', 10);
-  const key1 = `${dayNum}-Aug`;
-  const key2 = `${dateStr} 00:00:00`;
-  const key3 = dateStr;
-  
-  if (row[key1] !== undefined && row[key1] !== '') return parseFloat(row[key1]);
-  if (row[key2] !== undefined && row[key2] !== '') return parseFloat(row[key2]);
-  if (row[key3] !== undefined && row[key3] !== '') return parseFloat(row[key3]);
+  for (const [key, val] of Object.entries(row)) {
+    let normKey;
+    if (!isNaN(key)) {
+      normKey = excelDateToDateStr(parseFloat(key));
+    } else {
+      normKey = excelDateToDateStr(key);
+    }
+    if (normKey === dateStr && val !== undefined && val !== '') {
+      return parseFloat(val);
+    }
+  }
   return undefined;
 }
 
