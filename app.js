@@ -196,8 +196,23 @@ function processTelemetryData() {
   const ndDateMap = buildHeaderDateMap(ndKeys);
   const swDateMap = buildHeaderDateMap(swKeys);
 
-  const activeDates = Object.keys(ndDateMap).sort();
-  const maxDate = activeDates[activeDates.length - 1] || '2026-08-31';
+  // Find max occurred date in Consolidated RSL Aug-26 to cap timeline (removing mock dates)
+  let rslMaxDate = '2026-08-01';
+  rslRows.forEach(row => {
+    if (row['Occurring']) {
+      const serial = parseFloat(row['Occurring']);
+      if (!isNaN(serial)) {
+        const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
+        const d = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+        if (d.startsWith('2026-08') && d > rslMaxDate) {
+          rslMaxDate = d;
+        }
+      }
+    }
+  });
+
+  const activeDates = Object.keys(ndDateMap).filter(d => d <= rslMaxDate).sort();
+  const maxDate = activeDates[activeDates.length - 1] || rslMaxDate;
   const fullDateRange = [];
   const maxDay = parseInt(maxDate.split('-')[2], 10);
   for (let d = 1; d <= maxDay; d++) {
