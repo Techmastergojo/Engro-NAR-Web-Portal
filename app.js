@@ -167,17 +167,34 @@ function processTelemetryData() {
     headers.forEach(h => {
       if (h === undefined || h === null) return;
       let day = null;
+      let month = null;
+      let year = 2026;
       const str = String(h).trim();
       if (!isNaN(str) && parseFloat(str) > 40000 && parseFloat(str) < 50000) {
         const serial = parseFloat(str);
         const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
         day = date.getUTCDate();
+        month = date.getUTCMonth() + 1;
+        year = date.getUTCFullYear();
       } else {
-        const m = str.match(/^(\d+)-(Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)(-\d+)?$/i);
-        if (m) day = parseInt(m[1], 10);
+        const m = str.match(/^(\d+)-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(-\d+)?$/i);
+        if (m) {
+          day = parseInt(m[1], 10);
+          const monthName = m[2].toLowerCase();
+          const monthsMap = {
+            jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+            jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
+          };
+          month = monthsMap[monthName];
+          if (m[3]) {
+            const yr = m[3].replace(/^-/, '');
+            year = yr.length === 2 ? 2000 + parseInt(yr, 10) : parseInt(yr, 10);
+          }
+        }
       }
-      if (day !== null && day >= 1 && day <= 31) {
-        dateMap[`2026-08-${String(day).padStart(2, '0')}`] = h;
+      if (day !== null && month !== null && year !== null) {
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        dateMap[dateStr] = h;
       }
     });
     return dateMap;
@@ -194,20 +211,14 @@ function processTelemetryData() {
       if (!isNaN(serial)) {
         const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
         const d = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
-        if (d.startsWith('2026-08') && d > rslMaxDate) {
+        if (d > rslMaxDate) {
           rslMaxDate = d;
         }
       }
     }
   });
 
-  const activeDates = Object.keys(ndDateMap).filter(d => d <= rslMaxDate).sort();
-  const maxDate = activeDates[activeDates.length - 1] || rslMaxDate;
-  const fullDateRange = [];
-  const maxDay = parseInt(maxDate.split('-')[2], 10);
-  for (let d = 1; d <= maxDay; d++) {
-    fullDateRange.push(`2026-08-${String(d).padStart(2, '0')}`);
-  }
+  const fullDateRange = Object.keys(ndDateMap).filter(d => d <= rslMaxDate).sort();
 
   // 3. Build Lookup Maps
   const siteWiseMap = {};
@@ -216,6 +227,16 @@ function processTelemetryData() {
   hist2gRows.forEach(row => { const c = String(row['Site Code']||'').trim().toLowerCase(); if(c) hist2gMap[c]=row; });
   const dateWiseMap = {};
   dateWiseRows.forEach(row => { const v=row['MBU']; if(v) dateWiseMap[excelDateToDateStr(v)]=row; });
+
+  // Build index map for RSL incidents by site code to avoid O(N*M) performance penalty
+  const rslIncidentsMap = {};
+  rslRows.forEach(row => {
+    const code = String(row['SiteCode'] || row['Code'] || '').trim().toLowerCase();
+    if (code) {
+      if (!rslIncidentsMap[code]) rslIncidentsMap[code] = [];
+      rslIncidentsMap[code].push(row);
+    }
+  });
 
   const siteMap = {};
   const reasonMap = {};
@@ -273,7 +294,7 @@ function processTelemetryData() {
     const nar6Months = extract6MonthNar(hist2gMap[siteCodeLower]);
 
     // Site outages & reasons
-    const siteIncidents = rslRows.filter(r => String(r['SiteCode'] || r['Code'] || '').trim().toLowerCase() === siteCodeLower);
+    const siteIncidents = rslIncidentsMap[siteCodeLower] || [];
     const sReasonsMap = {};
     siteIncidents.forEach(r => {
       const reason = String(r['Reasons'] || r['Reason Category'] || 'Commercial Power Grid').trim();
@@ -539,10 +560,13 @@ function mergePayloads(existing, incoming) {
       merged6m.sort((a, b) => a.monthKey.localeCompare(b.monthKey));
       old.nar6Months = merged6m;
 
-      // Update latest stats (from newer file)
-      old.availability = s.availability;
+      // Update total downtime and incident count by summing
       old.totalDtHours = Number((old.totalDtHours + s.totalDtHours).toFixed(1));
       old.incidentCount = old.incidentCount + s.incidentCount;
+
+      // Recalculate site overall availability as the average of all timeline days on record!
+      const totalNar = old.dailyTimeline.reduce((sum, d) => sum + d.narPercent, 0);
+      old.availability = Number((totalNar / old.dailyTimeline.length).toFixed(2));
 
       // Merge topReasons (accumulate hours)
       const reasonsMap = {};
@@ -550,7 +574,7 @@ function mergePayloads(existing, incoming) {
       (s.topReasons || []).forEach(r => { reasonsMap[r.reason] = (reasonsMap[r.reason] || 0) + r.hours; });
       old.topReasons = Object.entries(reasonsMap)
         .map(([reason, hours]) => ({ reason, hours: Number(hours.toFixed(1)) }))
-        .sort((a, b) => b.hours - a.hours).slice(0, 5);
+        .sort((a, b) => b.hours - a.hours).slice(0, 3);
 
       siteMap[key] = old;
     } else {
@@ -574,42 +598,50 @@ function mergePayloads(existing, incoming) {
   });
   const dailyTimeline = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
 
-  // --- Merge topReasons ---
-  const reasonsMap = {};
-  (existing.topReasons || []).forEach(r => { reasonsMap[r.reason] = { ...r }; });
-  (incoming.topReasons || []).forEach(r => {
-    if (reasonsMap[r.reason]) {
-      reasonsMap[r.reason].totalDtHours = Number((reasonsMap[r.reason].totalDtHours + r.totalDtHours).toFixed(1));
-      reasonsMap[r.reason].incidentCount += r.incidentCount;
-    } else {
-      reasonsMap[r.reason] = { ...r };
-    }
-  });
-  const topReasons = Object.values(reasonsMap).sort((a, b) => b.totalDtHours - a.totalDtHours);
-
-  // --- Merge mbuBreakdown ---
-  const mbuMap = {};
-  (existing.mbuBreakdown || []).forEach(m => { mbuMap[m.mbu] = { ...m }; });
-  (incoming.mbuBreakdown || []).forEach(m => {
-    if (mbuMap[m.mbu]) {
-      mbuMap[m.mbu].totalDtHours = Number((mbuMap[m.mbu].totalDtHours + m.totalDtHours).toFixed(1));
-      mbuMap[m.mbu].incidentCount += m.incidentCount;
-      mbuMap[m.mbu].siteCount = Math.max(mbuMap[m.mbu].siteCount, m.siteCount);
-      mbuMap[m.mbu].avgAvailability = m.avgAvailability; // latest value
-    } else {
-      mbuMap[m.mbu] = { ...m };
-    }
-  });
-  const mbuBreakdown = Object.values(mbuMap).sort((a, b) => b.totalDtHours - a.totalDtHours);
-
-  // --- Merge sampleIncidents (append new, deduplicate by id) ---
-  const incidentIds = new Set((existing.sampleIncidents || []).map(i => i.id));
+  // --- Merge sampleIncidents ---
   const mergedIncidents = [...(existing.sampleIncidents || [])];
   (incoming.sampleIncidents || []).forEach(inc => {
-    // Assign new unique ID to avoid collision
     const newId = `RSL-${mergedIncidents.length + 1}`;
     mergedIncidents.push({ ...inc, id: newId });
   });
+
+  // --- Recalculate global topReasons from merged catalog ---
+  const reasonsMapGlobal = {};
+  allSites.forEach(s => {
+    (s.topReasons || []).forEach(r => {
+      reasonsMapGlobal[r.reason] = (reasonsMapGlobal[r.reason] || 0) + r.hours;
+    });
+  });
+  const topReasons = Object.entries(reasonsMapGlobal).map(([reason, hours]) => ({
+    reason,
+    category: reason,
+    totalDtHours: Number(hours.toFixed(1)),
+    incidentCount: 0
+  })).sort((a, b) => b.totalDtHours - a.totalDtHours);
+
+  mergedIncidents.forEach(inc => {
+    const globalReason = topReasons.find(r => r.reason === inc.rootCause);
+    if (globalReason) globalReason.incidentCount++;
+  });
+
+  // --- Recalculate mbuBreakdown from merged catalog ---
+  const mbuMap = {};
+  allSites.forEach(s => {
+    if (!mbuMap[s.mbu]) {
+      mbuMap[s.mbu] = { mbu: s.mbu, totalDtHours: 0, incidentCount: 0, siteCount: 0, availSum: 0 };
+    }
+    mbuMap[s.mbu].totalDtHours += s.totalDtHours;
+    mbuMap[s.mbu].incidentCount += s.incidentCount;
+    mbuMap[s.mbu].siteCount++;
+    mbuMap[s.mbu].availSum += s.availability;
+  });
+  const mbuBreakdown = Object.values(mbuMap).map(m => ({
+    mbu: m.mbu,
+    totalDtHours: Number(m.totalDtHours.toFixed(1)),
+    incidentCount: m.incidentCount,
+    siteCount: m.siteCount,
+    avgAvailability: Number((m.availSum / m.siteCount).toFixed(2))
+  })).sort((a, b) => b.totalDtHours - a.totalDtHours);
 
   // --- Recalculate summary ---
   const sumAvail = allSites.reduce((s, x) => s + x.availability, 0);
@@ -618,7 +650,7 @@ function mergePayloads(existing, incoming) {
 
   return {
     summary: {
-      totalRawRecords: (existing.summary?.totalRawRecords || 0) + (incoming.summary?.totalRawRecords || 0),
+      totalRawRecords: mergedIncidents.length,
       totalDowntimeHours: Number(totalDtHours.toFixed(1)),
       totalSites: allSites.length,
       avgAvailability: Number(avgAvail.toFixed(2))
